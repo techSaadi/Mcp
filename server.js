@@ -1,118 +1,66 @@
 require('dotenv').config();
 const express = require('express');
-const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
 const axios = require('axios');
 const cors = require('cors');
 
 const app = express();
-app.use(cors());
+
+// CORS configuration for Vercel
+app.use(cors({
+  origin: [
+    'https://poke.com',
+    'https://*.poke.com',
+    'http://localhost:3000',
+    'http://localhost:3001'
+  ],
+  credentials: true
+}));
+
 app.use(express.json());
 
-const PORT = process.env.PORT || 3000;
 const MCP_SECRET_KEY = process.env.MCP_SECRET_KEY || "poke_whatsapp_clickup_2024";
 const CLICKUP_API_KEY = process.env.CLICKUP_API_KEY;
+const WHATSAPP_SERVER_URL = process.env.WHATSAPP_SERVER_URL;
 
-console.log('🚀 Starting Poke MCP Server with REAL WhatsApp...');
+console.log('🚀 Starting Vercel MCP Server...');
 
-// ==================== REAL WHATSAPP CLIENT ====================
-const whatsappClient = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: { 
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
-    }
-});
-
-let isWhatsAppReady = false;
-const pendingMessages = [];
-
-// WhatsApp QR Code
-whatsappClient.on('qr', (qr) => {
-    console.log('\n📱 WHATSAPP QR CODE - Scan with your phone:');
-    qrcode.generate(qr, { small: true });
-    console.log('\n1. Open WhatsApp on your phone');
-    console.log('2. Go to Settings → Linked Devices → Link a Device');
-    console.log('3. Scan the QR code above\n');
-});
-
-// WhatsApp Ready
-whatsappClient.on('ready', () => {
-    console.log('✅ WhatsApp CLIENT READY! You can now send and receive messages.');
-    isWhatsAppReady = true;
+// ==================== MCP AUTHENTICATION ====================
+const authenticateMCP = (req, res, next) => {
+    const clientKey = req.headers['x-mcp-key'];
     
-    // Process any pending messages
-    pendingMessages.forEach(msg => {
-        sendRealWhatsAppMessage(msg.phoneNumber, msg.message);
-    });
-    pendingMessages.length = 0;
-});
-
-// WhatsApp Message Received
-whatsappClient.on('message', async (message) => {
-    console.log('\n📩 NEW WHATSAPP MESSAGE RECEIVED:');
-    console.log('From:', message.from);
-    console.log('Message:', message.body);
-    console.log('Timestamp:', message.timestamp);
-    
-    // You can process messages here
-    // Forward to Poke, save to database, etc.
-});
-
-whatsappClient.initialize();
-
-// ==================== REAL WHATSAPP FUNCTIONS ====================
-async function sendRealWhatsAppMessage(phoneNumber, message) {
-    try {
-        if (!isWhatsAppReady) {
-            console.log('⏳ WhatsApp not ready, message queued...');
-            pendingMessages.push({ phoneNumber, message });
-            return {
-                success: false,
-                error: 'WhatsApp connecting... Please wait',
-                queued: true
-            };
-        }
-
-        // Format phone number
-        let cleanedNumber = phoneNumber.replace(/\s+/g, '').replace(/[+-\s]/g, '');
-        if (!cleanedNumber.startsWith('92') && cleanedNumber.length === 10) {
-            cleanedNumber = '92' + cleanedNumber;
-        }
-        
-        const chatId = `${cleanedNumber}@c.us`;
-        
-        console.log(`📤 SENDING REAL WhatsApp to: ${cleanedNumber}`);
-        console.log(`💬 Message: ${message}`);
-        
-        const sentMessage = await whatsappClient.sendMessage(chatId, message);
-        
-        console.log('✅ REAL WhatsApp Message Sent!');
-        
-        return {
-            success: true,
-            messageId: sentMessage.id._serialized,
-            to: cleanedNumber,
-            timestamp: sentMessage.timestamp,
-            message: `REAL WhatsApp sent to ${cleanedNumber} successfully!`
-        };
-    } catch (error) {
-        console.error('❌ WhatsApp Send Error:', error);
-        return {
+    if (!clientKey) {
+        return res.status(401).json({
             success: false,
-            error: error.message
-        };
+            error: 'MCP key is required in x-mcp-key header'
+        });
     }
-}
+    
+    if (clientKey !== MCP_SECRET_KEY) {
+        return res.status(401).json({
+            success: false,
+            error: 'Invalid MCP key. Use: poke_whatsapp_clickup_2024'
+        });
+    }
+    
+    next();
+};
 
 // ==================== CLICKUP FUNCTIONS ====================
 async function createClickUpTask(taskName, description = '') {
     try {
         console.log('📤 Creating ClickUp Task:', taskName);
         
-        // Get teams to find correct list
+        if (!CLICKUP_API_KEY) {
+            return {
+                success: false,
+                error: 'ClickUp API key not configured in environment variables'
+            };
+        }
+
+        // Get teams
         const teamsResponse = await axios.get('https://api.clickup.com/api/v2/team', {
-            headers: { 'Authorization': CLICKUP_API_KEY }
+            headers: { 'Authorization': CLICKUP_API_KEY },
+            timeout: 10000
         });
 
         if (!teamsResponse.data.teams || teamsResponse.data.teams.length === 0) {
@@ -123,26 +71,26 @@ async function createClickUpTask(taskName, description = '') {
         }
 
         const teamId = teamsResponse.data.teams[0].id;
-        console.log('✅ Team Found:', teamId);
-
+        
         // Get spaces
         const spacesResponse = await axios.get(`https://api.clickup.com/api/v2/team/${teamId}/space`, {
-            headers: { 'Authorization': CLICKUP_API_KEY }
+            headers: { 'Authorization': CLICKUP_API_KEY },
+            timeout: 10000
         });
 
         if (!spacesResponse.data.spaces || spacesResponse.data.spaces.length === 0) {
             return {
                 success: false,
-                error: 'No spaces found in your team.'
+                error: 'No spaces found in your ClickUp team.'
             };
         }
 
         const spaceId = spacesResponse.data.spaces[0].id;
-        console.log('✅ Space Found:', spaceId);
-
+        
         // Get lists
         const listsResponse = await axios.get(`https://api.clickup.com/api/v2/space/${spaceId}/list`, {
-            headers: { 'Authorization': CLICKUP_API_KEY }
+            headers: { 'Authorization': CLICKUP_API_KEY },
+            timeout: 10000
         });
 
         if (!listsResponse.data.lists || listsResponse.data.lists.length === 0) {
@@ -153,7 +101,6 @@ async function createClickUpTask(taskName, description = '') {
         }
 
         const listId = listsResponse.data.lists[0].id;
-        console.log('✅ List Found:', listId);
 
         // Create task
         const taskResponse = await axios.post(
@@ -166,7 +113,8 @@ async function createClickUpTask(taskName, description = '') {
                 headers: {
                     'Authorization': CLICKUP_API_KEY,
                     'Content-Type': 'application/json'
-                }
+                },
+                timeout: 15000
             }
         );
 
@@ -183,31 +131,78 @@ async function createClickUpTask(taskName, description = '') {
         console.error('❌ ClickUp Error:', error.response?.data || error.message);
         return {
             success: false,
-            error: error.response?.data?.err || error.message || 'Failed to create task'
+            error: error.response?.data?.err || error.message || 'Failed to create task in ClickUp'
         };
     }
 }
 
-// ==================== MCP AUTHENTICATION ====================
-const authenticateMCP = (req, res, next) => {
-    const clientKey = req.headers['x-mcp-key'];
-    
-    if (!clientKey) {
-        return res.status(401).json({
+// ==================== WHATSAPP PROXY FUNCTIONS ====================
+async function sendWhatsAppMessage(phoneNumber, message) {
+    try {
+        if (!WHATSAPP_SERVER_URL) {
+            return {
+                success: false,
+                error: 'WhatsApp server not configured. Please set WHATSAPP_SERVER_URL environment variable.'
+            };
+        }
+
+        console.log(`📤 Forwarding WhatsApp to: ${phoneNumber}`);
+        
+        const response = await axios.post(
+            `${WHATSAPP_SERVER_URL}/mcp/run`,
+            {
+                tool_name: 'send_whatsapp_message',
+                parameters: {
+                    phone_number: phoneNumber,
+                    message: message
+                }
+            },
+            {
+                headers: {
+                    'x-mcp-key': MCP_SECRET_KEY,
+                    'Content-Type': 'application/json'
+                },
+                timeout: 20000 // 20 seconds for WhatsApp
+            }
+        );
+
+        console.log('✅ WhatsApp forwarded successfully');
+        return response.data;
+    } catch (error) {
+        console.error('❌ WhatsApp Proxy Error:', error.message);
+        return {
             success: false,
-            error: 'MCP key is required in x-mcp-key header'
-        });
+            error: 'WhatsApp server unavailable. Please ensure local WhatsApp server is running.'
+        };
     }
-    
-    if (clientKey !== MCP_SECRET_KEY) {
-        return res.status(401).json({
-            success: false,
-            error: 'Invalid MCP key'
+}
+
+// Check WhatsApp server status
+async function checkWhatsAppStatus() {
+    try {
+        if (!WHATSAPP_SERVER_URL) {
+            return {
+                connected: false,
+                message: 'WhatsApp server URL not configured'
+            };
+        }
+
+        const response = await axios.get(`${WHATSAPP_SERVER_URL}/health`, { 
+            timeout: 5000 
         });
+        
+        return {
+            connected: true,
+            ready: response.data.whatsapp_ready,
+            message: response.data.whatsapp_ready ? 'WhatsApp connected and ready' : 'WhatsApp server running but not connected'
+        };
+    } catch (error) {
+        return {
+            connected: false,
+            message: 'WhatsApp server not reachable'
+        };
     }
-    
-    next();
-};
+}
 
 // ==================== MCP TOOLS ENDPOINT ====================
 app.post('/mcp/run', authenticateMCP, async (req, res) => {
@@ -217,7 +212,6 @@ app.post('/mcp/run', authenticateMCP, async (req, res) => {
         console.log('\n🛠️ MCP Tool Called:', tool_name);
         console.log('📝 Parameters:', parameters);
 
-        // Tool: create_clickup_task
         if (tool_name === 'create_clickup_task') {
             const { task_name, description = '' } = parameters;
             
@@ -231,8 +225,6 @@ app.post('/mcp/run', authenticateMCP, async (req, res) => {
             const result = await createClickUpTask(task_name, description);
             res.json(result);
         }
-        
-        // Tool: send_whatsapp_message
         else if (tool_name === 'send_whatsapp_message') {
             const { phone_number, message } = parameters;
             
@@ -250,62 +242,52 @@ app.post('/mcp/run', authenticateMCP, async (req, res) => {
                 });
             }
 
-            const result = await sendRealWhatsAppMessage(phone_number, message);
+            const result = await sendWhatsAppMessage(phone_number, message);
             res.json(result);
         }
-        
-        // Tool: get_server_status
         else if (tool_name === 'get_server_status') {
+            const whatsappStatus = await checkWhatsAppStatus();
+            
             res.json({
                 success: true,
                 status: 'running',
+                deployment: 'vercel',
                 services: {
                     clickup: CLICKUP_API_KEY ? 'configured' : 'not_configured',
-                    whatsapp: isWhatsAppReady ? 'connected' : 'connecting',
+                    whatsapp: whatsappStatus.connected ? (whatsappStatus.ready ? 'connected' : 'waiting_qr') : 'disconnected',
                     server: 'healthy'
                 },
+                message: whatsappStatus.message,
                 timestamp: new Date().toISOString()
             });
         }
-        
-        // Tool: get_whatsapp_qr
-        else if (tool_name === 'get_whatsapp_qr') {
-            res.json({
-                success: true,
-                whatsapp_status: isWhatsAppReady ? 'connected' : 'waiting_qr',
-                message: isWhatsAppReady ? 'WhatsApp is connected' : 'Please scan QR code to connect WhatsApp'
-            });
-        }
-        
-        // Unknown tool
         else {
             res.json({
                 success: false,
-                error: `Unknown tool: ${tool_name}. Available tools: create_clickup_task, send_whatsapp_message, get_server_status, get_whatsapp_qr`
+                error: `Unknown tool: ${tool_name}. Available tools: create_clickup_task, send_whatsapp_message, get_server_status`
             });
         }
-        
     } catch (error) {
-        console.error('❌ MCP Endpoint Error:', error);
+        console.error('❌ MCP Error:', error);
         res.json({
             success: false,
-            error: `Server error: ${error.message}`
+            error: error.message
         });
     }
 });
 
-// ==================== HEALTH CHECK ENDPOINT ====================
+// ==================== HEALTH CHECK ====================
 app.get('/health', (req, res) => {
     res.json({
         status: 'OK',
-        service: 'Poke MCP Server',
-        version: '1.0.0',
-        whatsapp: isWhatsAppReady ? 'connected' : 'disconnected',
-        clickup: CLICKUP_API_KEY ? 'configured' : 'not_configured',
+        service: 'Vercel MCP Server',
+        version: '2.0.0',
+        deployment: 'vercel',
+        features: ['ClickUp Integration', 'WhatsApp Integration'],
         timestamp: new Date().toISOString(),
         endpoints: {
-            mcp: '/mcp/run',
-            health: '/health'
+            mcp: 'POST /api/mcp/run',
+            health: 'GET /api/health'
         }
     });
 });
@@ -313,32 +295,21 @@ app.get('/health', (req, res) => {
 // ==================== ROOT ENDPOINT ====================
 app.get('/', (req, res) => {
     res.json({
-        message: '🚀 Poke MCP Server is Running!',
-        services: ['WhatsApp Messaging', 'ClickUp Task Management'],
-        endpoints: {
-            mcp: 'POST /mcp/run',
-            health: 'GET /health'
-        },
-        instructions: 'Connect this server to Poke AI via MCP protocol'
+        message: '🚀 Poke MCP Server deployed on Vercel',
+        services: ['ClickUp Task Management', 'WhatsApp Messaging'],
+        deployment: 'vercel',
+        instructions: 'Use /api/mcp/run endpoint for Poke integration'
     });
 });
 
-// ==================== START SERVER ====================
-app.listen(PORT, '0.0.0.0', () => {
-    console.log('\n' + '='.repeat(60));
-    console.log('🎉 POKE MCP SERVER STARTED SUCCESSFULLY!');
-    console.log('='.repeat(60));
-    console.log(`📍 Server URL: http://localhost:${PORT}`);
-    console.log(`📍 Cloud URL: https://your-app.up.railway.app`);
-    console.log(`🛠️  MCP Endpoint: /mcp/run`);
-    console.log(`❤️  Health Check: /health`);
-    console.log(`🔑 MCP Key: ${MCP_SECRET_KEY}`);
-    console.log('='.repeat(60));
-    console.log('\n📋 Available Tools:');
-    console.log('   • create_clickup_task - Create tasks in ClickUp');
-    console.log('   • send_whatsapp_message - Send WhatsApp messages');
-    console.log('   • get_server_status - Check server health');
-    console.log('   • get_whatsapp_qr - WhatsApp connection status');
-    console.log('\n🚀 Server ready for Poke integration!');
-    console.log('📱 WhatsApp QR code will appear when server starts...');
-});
+// ==================== VERCEL COMPATIBILITY ====================
+// Export for Vercel serverless functions
+module.exports = app;
+
+// For local development
+if (require.main === module) {
+    const PORT = process.env.PORT || 3000;
+    app.listen(PORT, () => {
+        console.log(`🚀 Server running on port ${PORT}`);
+    });
+}
